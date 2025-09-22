@@ -1,10 +1,5 @@
+gevent
+python-dotenv
 discum
 requests
-Flask
-python-dotenv
-google-generativeai
-gunicorn
-geventpython-dotenv
-discum
 flask
-
