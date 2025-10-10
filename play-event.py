@@ -435,7 +435,7 @@ Available response options:
 Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affection with {character_name}."""
 
             payload = { "contents": [{"parts": [{"text": prompt}]}] }
-            api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
             
             response = requests.post(api_url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
             response.raise_for_status()
@@ -1129,4 +1129,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"[SERVER] Khởi động Web Server tại http://0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
