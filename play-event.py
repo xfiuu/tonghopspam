@@ -21,7 +21,10 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 KD_CHANNEL_ID = os.getenv("KD_CHANNEL_ID")
 KVI_CHANNEL_ID = os.getenv("KVI_CHANNEL_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# --- THAY ĐỔI: Sử dụng OpenAI API Key ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo") # Mặc định là gpt-3.5-turbo
+# ----------------------------------------
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
 JSONBIN_BIN_ID = os.getenv("JSONBIN_BIN_ID")
 KARUTA_ID = "646937666251915264"
@@ -37,9 +40,10 @@ if not KD_CHANNEL_ID:
     print("CẢNH BÁO: KD_CHANNEL_ID chưa được cấu hình. Tính năng Auto KD sẽ không khả dụng.", flush=True)
 if not KVI_CHANNEL_ID:
     print("CẢNH BÁO: KVI_CHANNEL_ID chưa được cấu hình. Tính năng Auto KVI sẽ không khả dụng.", flush=True)
-if not GEMINI_API_KEY:
-    print("CẢNH BÁO: GEMINI_API_KEY chưa được cấu hình. Tính năng Auto KVI sẽ không khả dụng.", flush=True)
-
+# --- THAY ĐỔI: Kiểm tra OpenAI API Key ---
+if not OPENAI_API_KEY:
+    print("CẢNH BÁO: OPENAI_API_KEY chưa được cấu hình. Tính năng Auto KVI sẽ không khả dụng.", flush=True)
+# ------------------------------------
 
 # --- Các biến trạng thái và điều khiển ---
 lock = threading.RLock()
@@ -55,7 +59,7 @@ is_hourly_loop_enabled = False
 loop_delay_seconds = 3600
 spam_panels = []
 panel_id_counter = 0
-next_kvi_allowed_time = 0 
+next_kvi_allowed_time = 0
 
 # Các biến runtime khác
 event_bot_thread, event_bot_instance = None, None
@@ -375,7 +379,7 @@ def run_auto_kd_thread():
         print("[AUTO KD] Luồng Auto KD đã dừng.", flush=True)
 
 # ===================================================================
-# CHỨC NĂNG AUTO KVI (ĐÃ SỬA LỖI LOGIC)
+# CHỨC NĂNG AUTO KVI (DÙNG OPENAI API)
 # ===================================================================
 def run_auto_kvi_thread():
     global is_auto_kvi_running, auto_kvi_instance, next_kvi_allowed_time
@@ -384,10 +388,12 @@ def run_auto_kvi_thread():
         print("[AUTO KVI] LỖI: Chưa cấu hình KVI_CHANNEL_ID.", flush=True)
         with lock: is_auto_kvi_running = False; save_settings()
         return
-    if not GEMINI_API_KEY:
-        print("[AUTO KVI] LỖI: Gemini API Key chưa được cấu hình.", flush=True)
+    # --- THAY ĐỔI: Kiểm tra OpenAI Key ---
+    if not OPENAI_API_KEY:
+        print("[AUTO KVI] LỖI: OpenAI API Key chưa được cấu hình.", flush=True)
         with lock: is_auto_kvi_running = False; save_settings()
         return
+    # ------------------------------------
 
     bot = discum.Client(token=TOKEN, log=False)
     with lock: auto_kvi_instance = bot
@@ -399,9 +405,10 @@ def run_auto_kvi_thread():
     KVI_COOLDOWN_SECONDS = 3
     KVI_TIMEOUT_SECONDS = 3605
 
-    def answer_question_with_gemini(bot_instance, message_data, question, options):
+    # --- THAY ĐỔI: Chuyển sang hàm dùng OpenAI ---
+    def answer_question_with_openai(bot_instance, message_data, question, options):
         nonlocal last_api_call_time
-        print(f"[AUTO KVI] GEMINI: Nhận được câu hỏi: '{question}'", flush=True)
+        print(f"[AUTO KVI] OPENAI: Nhận được câu hỏi: '{question}'", flush=True)
         
         try:
             embeds = message_data.get("embeds", [])
@@ -434,25 +441,38 @@ Available response options:
 
 Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affection with {character_name}."""
 
-            payload = { "contents": [{"parts": [{"text": prompt}]}] }
-            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            # --- Cấu trúc payload và header cho OpenAI ---
+            api_url = "https://api.openai.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": OPENAI_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.5,
+                "max_tokens": 10
+            }
+            # ------------------------------------------------
             
-            response = requests.post(api_url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=15)
             response.raise_for_status()
             
             result = response.json()
-            api_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
+            # --- Phân tích phản hồi từ OpenAI ---
+            api_text = result['choices'][0]['message']['content'].strip()
+            # -----------------------------------
             
             match = re.search(r'(\d+)', api_text)
             if match:
                 selected_option = int(match.group(1))
                 if 1 <= selected_option <= len(options):
-                    print(f"[AUTO KVI] GEMINI: Chọn đáp án {selected_option}: '{options[selected_option-1]}'", flush=True)
+                    print(f"[AUTO KVI] OPENAI: Chọn đáp án {selected_option}: '{options[selected_option-1]}'", flush=True)
                     time.sleep(random.uniform(1.5, 2.5))
                     if click_button_by_index(bot_instance, message_data, selected_option - 1, "AUTO KVI"):
                         last_api_call_time = time.time()
                 else:
-                    print(f"[AUTO KVI] LỖI: Gemini chọn số không hợp lệ: {selected_option}. Chọn đáp án đầu tiên.", flush=True)
+                    print(f"[AUTO KVI] LỖI: OpenAI chọn số không hợp lệ: {selected_option}. Chọn đáp án đầu tiên.", flush=True)
                     click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
             else:
                 print(f"[AUTO KVI] LỖI: Không tìm thấy số trong phản hồi: '{api_text}'. Chọn đáp án đầu tiên.", flush=True)
@@ -464,6 +484,7 @@ Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affe
         except Exception as e:
             print(f"[AUTO KVI] LỖI NGOẠI LỆ: {e}. Chọn đáp án đầu tiên.", flush=True)
             click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
+    # --- KẾT THÚC THAY ĐỔI HÀM API ---
 
     def smart_button_click(bot_instance, message_data):
         nonlocal last_api_call_time
@@ -500,33 +521,25 @@ Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affe
         if current_time - last_api_call_time < KVI_COOLDOWN_SECONDS:
             return
 
-        # <<< THAY ĐỔI BẮT ĐẦU: Logic mới để xác định kết thúc phiên >>>
-        # Lấy thông tin các nút bấm từ tin nhắn
         components = m.get("components", [])
         action_row = components[0] if components and components[0].get("type") == 1 else {}
         all_buttons = action_row.get("components", [])
 
-        # Kiểm tra nếu có nút và nút đầu tiên bị vô hiệu hóa (disabled)
         if all_buttons and all_buttons[0].get("disabled", False):
-            # Dùng debounce để tránh ghi nhận kết thúc phiên nhiều lần
             if time.time() - last_session_end_time > 60:
                 last_session_end_time = time.time()
                 with lock:
-                    # Đặt cooldown 30 phút cho lần KVI tiếp theo
                     next_kvi_allowed_time = time.time() + 1800 
                     print(f"[AUTO KVI] INFO: Nút 'Talk' đã bị vô hiệu hóa. Phiên KVI kết thúc.", flush=True)
                     print(f"[AUTO KVI] INFO: KVI tiếp theo được phép sau {time.strftime('%H:%M:%S', time.localtime(next_kvi_allowed_time))}", flush=True)
                     save_settings()
-            return # Dừng xử lý thêm vì phiên đã kết thúc
-
-        # <<< THAY ĐỔI KẾT THÚC >>>
+            return
 
         embeds = m.get("embeds", [])
         if not embeds: return
         embed = embeds[0]
         desc = embed.get("description", "")
         
-        # Logic cũ vẫn giữ nguyên: Nếu có câu hỏi thì dùng AI
         if '1️⃣' in desc:
             print("[AUTO KVI] INFO: Phát hiện câu hỏi có emoji 1️⃣. Dùng AI...", flush=True)
             question_patterns = [r'["“](.+?)["”]', r'"([^"]+)"']
@@ -546,13 +559,14 @@ Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affe
                     
                     if question and len(options) >= 2:
                         question_found = True
-                        threading.Thread(target=answer_question_with_gemini, args=(bot, m, question, options), daemon=True).start()
+                        # --- THAY ĐỔI: Gọi hàm OpenAI ---
+                        threading.Thread(target=answer_question_with_openai, args=(bot, m, question, options), daemon=True).start()
+                        # ----------------------------------
                         break
             
             if not question_found:
                  print("[AUTO KVI] WARN: Có emoji 1️⃣ nhưng không thể phân tích câu hỏi. Chuyển sang hành động mặc định.", flush=True)
                  threading.Thread(target=smart_button_click, args=(bot, m), daemon=True).start()
-        # Nếu không có câu hỏi và phiên chưa kết thúc, thực hiện hành động mặc định
         else:
             print("[AUTO KVI] INFO: Không có câu hỏi. Thực hiện hành động mặc định (bấm nút đầu tiên).", flush=True)
             threading.Thread(target=smart_button_click, args=(bot, m), daemon=True).start()
@@ -713,10 +727,12 @@ def restore_bot_states():
         auto_kd_thread = threading.Thread(target=run_auto_kd_thread, daemon=True)
         auto_kd_thread.start()
     
-    if is_auto_kvi_running and KVI_CHANNEL_ID and GEMINI_API_KEY:
+    # --- THAY ĐỔI: Khôi phục Auto KVI với key OpenAI ---
+    if is_auto_kvi_running and KVI_CHANNEL_ID and OPENAI_API_KEY:
         print("[RESTORE] Khôi phục Auto KVI...", flush=True)
         auto_kvi_thread = threading.Thread(target=run_auto_kvi_thread, daemon=True)
         auto_kvi_thread.start()
+    # ----------------------------------------------------
 
     if is_autoclick_running:
         print("[RESTORE] Khôi phục Auto Click...", flush=True)
@@ -784,7 +800,7 @@ HTML_TEMPLATE = """
         <div class="panel" id="event-bot-panel"><h2>Chế độ 1: Auto Play Event</h2><p style="font-size:0.9em; color:#aaa;">Tự động chơi event với logic phức tạp (di chuyển, tìm quả, xác nhận).</p><div id="event-bot-status" class="status">Trạng thái: ĐÃ DỪNG</div><button id="toggleEventBotBtn">Bật Auto Play</button></div>
         <div class="panel" id="autoclick-panel"><h2>Chế độ 2: Auto Click</h2><p style="font-size:0.9em; color:#aaa;">Chỉ click liên tục vào một nút. Bạn phải tự gõ 'kevent' để bot nhận diện.</p><div id="autoclick-status" class="status">Trạng thái: ĐÃ DỪNG</div><div class="input-group"><label for="autoclick-button-index">Button Index</label><input type="number" id="autoclick-button-index" value="0" min="0"></div><div class="input-group"><label for="autoclick-count">Số lần click (0 = ∞)</label><input type="number" id="autoclick-count" value="10" min="0"></div><button id="toggleAutoclickBtn">Bật Auto Click</button></div>
         <div class="panel" id="auto-kd-panel"><h2>Auto KD</h2><p style="font-size:0.9em; color:#aaa;">Tự động gửi 'kd' khi phát hiện "blessing has activated!" trong kênh KD.</p><div id="auto-kd-status" class="status">Trạng thái: ĐÃ DỪNG</div><div class="channel-display">KD Channel: <span id="kd-channel-display"></span></div><button id="toggleAutoKdBtn">Bật Auto KD</button></div>
-        <div class="panel" id="auto-kvi-panel"><h2>Auto KVI (dùng Gemini AI)</h2><p style="font-size:0.9em; color:#aaa;">Tự động tương tác KVI. Dùng AI để chọn câu trả lời tốt nhất.</p><div id="auto-kvi-status" class="status">Trạng thái: ĐÃ DỪNG</div><div class="channel-display">KVI Channel: <span id="kvi-channel-display"></span></div><button id="toggleAutoKviBtn">Bật Auto KVI</button></div>
+        <div class="panel" id="auto-kvi-panel"><h2>Auto KVI (dùng OpenAI AI)</h2><p style="font-size:0.9em; color:#aaa;">Tự động tương tác KVI. Dùng AI để chọn câu trả lời tốt nhất.</p><div id="auto-kvi-status" class="status">Trạng thái: ĐÃ DỪNG</div><div class="channel-display">KVI Channel: <span id="kvi-channel-display"></span></div><button id="toggleAutoKviBtn">Bật Auto KVI</button></div>
         <div class="panel"><h2>Tiện ích: Vòng lặp Event</h2><p style="font-size:0.9em; color:#aaa;">Tự động gửi 'kevent' theo chu kỳ. Chỉ hoạt động khi "Chế độ 1" đang chạy.</p><div id="loop-status" class="status">Trạng thái: ĐÃ DỪNG</div><div class="input-group-row"><label for="delay-input">Delay (giây)</label><input type="number" id="delay-input" value="3600"></div><button id="toggleLoopBtn">Bật Vòng lặp</button></div>
     </div>
     <div class="spam-controls">
@@ -1029,8 +1045,10 @@ def toggle_auto_kd():
 def toggle_auto_kvi():
     global auto_kvi_thread, is_auto_kvi_running
     with lock:
-        if not KVI_CHANNEL_ID or not GEMINI_API_KEY:
-            return jsonify({"status": "error", "message": "Chưa cấu hình KVI_CHANNEL_ID hoặc GEMINI_API_KEY."}), 400
+        # --- THAY ĐỔI: Kiểm tra key OpenAI ---
+        if not KVI_CHANNEL_ID or not OPENAI_API_KEY:
+            return jsonify({"status": "error", "message": "Chưa cấu hình KVI_CHANNEL_ID hoặc OPENAI_API_KEY."}), 400
+        # ------------------------------------
         
         if is_auto_kvi_running:
             is_auto_kvi_running = False
