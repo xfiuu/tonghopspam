@@ -10,6 +10,7 @@ import re
 from collections import deque
 from flask import Flask, jsonify, render_template_string, request
 from dotenv import load_dotenv
+from groq import Groq
 
 # ===================================================================
 # CẤU HÌNH VÀ BIẾN TOÀN CỤC
@@ -25,6 +26,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 JSONBIN_API_KEY = os.getenv("JSONBIN_API_KEY")
 JSONBIN_BIN_ID = os.getenv("JSONBIN_BIN_ID")
 KARUTA_ID = "646937666251915264"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # --- Kiểm tra biến môi trường ---
 if not TOKEN:
@@ -398,8 +400,10 @@ def run_auto_kvi_thread():
         print("[AUTO KVI] LỖI: Chưa cấu hình KVI_CHANNEL_ID.", flush=True)
         with lock: is_auto_kvi_running = False; save_settings()
         return
-    if not GEMINI_API_KEY:
-        print("[AUTO KVI] LỖI: Gemini API Key chưa được cấu hình.", flush=True)
+    
+    # <<< SỬA LỖI >>> KIỂM TRA GROQ KEY THAY VÌ GEMINI KEY
+    if not GROQ_API_KEY:
+        print("[AUTO KVI] LỖI: Groq API Key (GROQ_API_KEY) chưa được cấu hình.", flush=True)
         with lock: is_auto_kvi_running = False; save_settings()
         return
 
@@ -413,11 +417,22 @@ def run_auto_kvi_thread():
     KVI_COOLDOWN_SECONDS = 3
     KVI_TIMEOUT_SECONDS = 3605
 
+    # 
+    # <<< HÀM GROQ MỚI ĐƯỢC ĐẶT BÊN TRONG run_auto_kvi_thread >>>
+    #
     def answer_question_with_gemini(bot_instance, message_data, question, options):
-        nonlocal last_api_call_time
-        print(f"[AUTO KVI] GEMINI: Nhận được câu hỏi: '{question}'", flush=True)
-        
+        nonlocal last_api_call_time # <--- Dòng này bây giờ sẽ hoạt động
+        print(f"[AUTO KVI] GROQ: Nhận được câu hỏi: '{question}'", flush=True)
+
+        if not GROQ_API_KEY:
+            print("[AUTO KVI] LỖI: GROQ_API_KEY chưa được cấu hình. Chọn đáp án đầu tiên.", flush=True)
+            click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
+            return
+            
         try:
+            client = Groq(api_key=GROQ_API_KEY)
+            
+            # Giữ nguyên logic lấy tên nhân vật của bạn
             embeds = message_data.get("embeds", [])
             embed = embeds[0] if embeds else {}
             desc = embed.get("description", "")
@@ -431,6 +446,7 @@ def run_auto_kvi_thread():
             elif embed_title:
                 character_name = embed_title.replace("Visit Character", "").strip()
             
+            # Giữ nguyên prompt của bạn (nó rất tốt)
             prompt = f"""You are playing Karuta's KVI (Visit Character) system. You are interacting with the character: {character_name}. Your goal is to choose the BEST response to build affection and have a positive interaction with {character_name}.
 
 IMPORTANT RULES:
@@ -448,36 +464,40 @@ Available response options:
 
 Respond with ONLY the number (1, 2, 3, etc.) of the BEST option to increase affection with {character_name}."""
 
-            payload = { "contents": [{"parts": [{"text": prompt}]}] }
-            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            # Đây là phần gọi API Groq mới
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Question: \"{question}\"\nOptions:\n" + chr(10).join([f"{i+1}. {opt}" for i, opt in enumerate(options)])}
+                ],
+                model="llama-3.1-8b-instant", # Dùng Llama 3 8B, rất nhanh và thông minh
+            )
             
-            response = requests.post(api_url, headers={'Content-Type': 'application/json'}, json=payload, timeout=15)
-            response.raise_for_status()
+            api_text = chat_completion.choices[0].message.content.strip()
             
-            result = response.json()
-            api_text = result['candidates'][0]['content']['parts'][0]['text'].strip()
-            
+            # Giữ nguyên logic xử lý kết quả
             match = re.search(r'(\d+)', api_text)
             if match:
                 selected_option = int(match.group(1))
                 if 1 <= selected_option <= len(options):
-                    print(f"[AUTO KVI] GEMINI: Chọn đáp án {selected_option}: '{options[selected_option-1]}'", flush=True)
+                    print(f"[AUTO KVI] GROQ: Chọn đáp án {selected_option}: '{options[selected_option-1]}'", flush=True)
                     time.sleep(random.uniform(1.5, 2.5))
                     if click_button_by_index(bot_instance, message_data, selected_option - 1, "AUTO KVI"):
                         last_api_call_time = time.time()
                 else:
-                    print(f"[AUTO KVI] LỖI: Gemini chọn số không hợp lệ: {selected_option}. Chọn đáp án đầu tiên.", flush=True)
+                    print(f"[AUTO KVI] LỖI: Groq chọn số không hợp lệ: {selected_option}. Chọn đáp án đầu tiên.", flush=True)
                     click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
             else:
-                print(f"[AUTO KVI] LỖI: Không tìm thấy số trong phản hồi: '{api_text}'. Chọn đáp án đầu tiên.", flush=True)
+                print(f"[AUTO KVI] LỖI: Không tìm thấy số trong phản hồi Groq: '{api_text}'. Chọn đáp án đầu tiên.", flush=True)
                 click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
 
-        except requests.exceptions.RequestException as e:
-            print(f"[AUTO KVI] LỖI API: {e}. Chọn đáp án đầu tiên.", flush=True)
-            click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
         except Exception as e:
-            print(f"[AUTO KVI] LỖI NGOẠI LỆ: {e}. Chọn đáp án đầu tiên.", flush=True)
+            print(f"[AUTO KVI] LỖI API (Groq): {e}. Chọn đáp án đầu tiên.", flush=True)
             click_button_by_index(bot_instance, message_data, 0, "AUTO KVI")
+
+    #
+    # <<< KẾT THÚC HÀM GROQ >>>
+    #
 
     def smart_button_click(bot_instance, message_data):
         nonlocal last_api_call_time
